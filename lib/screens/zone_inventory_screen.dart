@@ -1,13 +1,18 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:shimmer/shimmer.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/shelf_zone_model.dart';
 import '../models/album_model.dart';
 import '../services/album_service.dart';
 import '../services/discogs_service.dart';
+import '../services/gemini_service.dart';
+import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
 import 'album_detail_screen.dart';
 
@@ -181,6 +186,14 @@ class _ZoneInventoryScreenState extends State<ZoneInventoryScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[50],
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _showAddAlbumDialog,
+        backgroundColor: AppTheme.secondaryColor,
+        icon: const Icon(Icons.add_rounded, color: Colors.white),
+        label: Text('Añadir disco',
+            style: GoogleFonts.archivoBlack(
+                fontSize: 12, color: Colors.white)),
+      ),
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(),
         slivers: [
@@ -855,6 +868,38 @@ class _ZoneInventoryScreenState extends State<ZoneInventoryScreen> {
     );
   }
 
+  // ─── AÑADIR DISCO A LA ZONA ─────────────────
+
+  void _showAddAlbumDialog() {
+    HapticFeedback.mediumImpact();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AddAlbumToZoneSheet(
+        zoneId: widget.zone.id,
+        currentAlbumCount: _albums.length,
+        onAlbumAdded: (album) {
+          setState(() {
+            _albums.add(album);
+            _applyFilters();
+          });
+          // Re-extraer géneros/años
+          final genres = <String>{};
+          final years = <int>{};
+          for (final a in _albums) {
+            genres.addAll(a.genres);
+            if (a.year != null) years.add(a.year!);
+          }
+          setState(() {
+            _availableGenres = genres.toList()..sort();
+            _availableYears = years.toList()..sort((a, b) => b.compareTo(a));
+          });
+        },
+      ),
+    );
+  }
+
   void _showAlbumDetail(AlbumModel album) {
     HapticFeedback.lightImpact();
     
@@ -897,6 +942,762 @@ class _ZoneInventoryScreenState extends State<ZoneInventoryScreen> {
             child: child,
           );
         },
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// Bottom sheet para añadir un disco a la zona
+// ─────────────────────────────────────────────
+class AddAlbumToZoneSheet extends StatefulWidget {
+  final String zoneId;
+  final int currentAlbumCount;
+  final Function(AlbumModel) onAlbumAdded;
+
+  const AddAlbumToZoneSheet({
+    super.key,
+    required this.zoneId,
+    required this.currentAlbumCount,
+    required this.onAlbumAdded,
+  });
+
+  @override
+  State<AddAlbumToZoneSheet> createState() => _AddAlbumToZoneSheetState();
+}
+
+class _AddAlbumToZoneSheetState extends State<AddAlbumToZoneSheet> {
+  final _discogsService = DiscogsService();
+  final _albumService = AlbumService();
+  final _geminiService = GeminiService();
+  final _storageService = StorageService();
+  final _searchController = TextEditingController();
+  final _picker = ImagePicker();
+
+  List<DiscogsAlbum> _results = [];
+  bool _isSearching = false;
+  bool _isSaving = false;
+  bool _isIdentifying = false;
+  int _maxPosition = 0;
+  bool _positionLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMaxPosition();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadMaxPosition() async {
+    final max = await _albumService.getMaxPositionInZone(widget.zoneId);
+    if (mounted) {
+      setState(() {
+        _maxPosition = max;
+        _positionLoaded = true;
+      });
+    }
+  }
+
+  /// Proxy de imágenes Discogs para evitar CORS en web
+  String _thumbUrl(DiscogsAlbum album) {
+    final url = album.thumb;
+    if (url == null || url.isEmpty) return '';
+    if (!kIsWeb) return url;
+    return DiscogsAlbum.proxyUrlForWeb(url) ?? url;
+  }
+
+  Future<void> _search() async {
+    final query = _searchController.text.trim();
+    if (query.isEmpty) return;
+
+    setState(() => _isSearching = true);
+    FocusScope.of(context).unfocus();
+
+    final results = await _discogsService.searchMultipleResults(query, limit: 12);
+    if (mounted) {
+      setState(() {
+        _results = results;
+        _isSearching = false;
+      });
+    }
+  }
+
+  /// Seleccionar/tomar foto del vinilo → Gemini identifica → auto-busca en Discogs
+  Future<void> _pickPhoto() async {
+    XFile? photo;
+
+    if (kIsWeb) {
+      // En web solo galería (file picker)
+      photo = await _picker.pickImage(source: ImageSource.gallery);
+    } else {
+      // En móvil: elegir cámara o galería
+      final source = await showModalBottomSheet<ImageSource>(
+        context: context,
+        backgroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        builder: (ctx) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('SUBIR FOTO DEL DISCO',
+                    style: GoogleFonts.archivoBlack(
+                        fontSize: 14, color: AppTheme.primaryColor)),
+                const SizedBox(height: 16),
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppTheme.accentColor,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.camera_alt, color: Colors.white, size: 22),
+                  ),
+                  title: Text('Cámara', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+                  onTap: () => Navigator.pop(ctx, ImageSource.camera),
+                ),
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppTheme.secondaryColor,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.photo_library, color: Colors.white, size: 22),
+                  ),
+                  title: Text('Galería', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+                  onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      if (source == null) return;
+      photo = await _picker.pickImage(
+        source: source,
+        maxWidth: 800,
+        imageQuality: 80,
+      );
+    }
+
+    if (photo == null) return;
+    if (!mounted) return;
+
+    // Mostrar indicador de progreso
+    setState(() => _isIdentifying = true);
+
+    try {
+      // 1. Leer bytes de la foto
+      final bytes = await photo.readAsBytes();
+
+      // 2. Subir a Supabase Storage (bucket zone-photos, carpeta temporal)
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId == null) throw Exception('No autenticado');
+
+      final imageUrl = await _storageService.uploadImageBytes(
+        bytes: bytes,
+        bucket: 'zone-photos',
+        userId: userId,
+        folder: 'single-detect',
+      );
+
+      if (imageUrl == null) throw Exception('Error subiendo foto');
+
+      // 3. Llamar a Gemini para identificar el disco
+      final detected = await _geminiService.identifySingleAlbum(imageUrl);
+
+      if (!mounted) return;
+
+      if (detected != null && detected.artist != 'Unknown Artist') {
+        // 4. Auto-rellenar búsqueda y ejecutar
+        final query = '${detected.artist} ${detected.title}';
+        _searchController.text = query;
+
+        // Snackbar con resultado de Gemini
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.auto_awesome, color: Colors.white, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Detectado: ${detected.artist} - ${detected.title}',
+                    style: GoogleFonts.poppins(fontSize: 12),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: const Color(0xFF00C853),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+
+        // Auto-buscar en Discogs
+        await _search();
+      } else {
+        // No se pudo identificar
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'No se pudo identificar el disco. Busca manualmente.',
+                    style: GoogleFonts.poppins(fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.orange[700],
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e', style: GoogleFonts.poppins(fontSize: 12)),
+            backgroundColor: Colors.red[700],
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isIdentifying = false);
+    }
+  }
+
+  Future<void> _addAlbum(DiscogsAlbum discogs) async {
+    if (!_positionLoaded) await _loadMaxPosition();
+
+    final position = await _askPosition(_maxPosition);
+    if (position == null) return;
+
+    setState(() => _isSaving = true);
+    HapticFeedback.mediumImpact();
+
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) {
+      setState(() => _isSaving = false);
+      return;
+    }
+
+    // Desplazar álbumes existentes desde esa posición
+    if (position <= _maxPosition) {
+      await _albumService.shiftAlbumsFromPosition(widget.zoneId, position);
+    }
+
+    final year = discogs.yearString != null
+        ? int.tryParse(discogs.yearString!)
+        : null;
+
+    final album = await _albumService.createAlbum(
+      userId: userId,
+      title: discogs.title,
+      artist: discogs.artist,
+      zoneId: widget.zoneId,
+      year: year,
+      positionIndex: position,
+      coverUrl: discogs.coverImage ?? discogs.thumb,
+      genres: discogs.genres,
+      styles: discogs.styles,
+    );
+
+    if (album != null) {
+      await _albumService.updateAlbum(album.id, {'discogs_id': discogs.id});
+      widget.onAlbumAdded(album.copyWith(discogsId: discogs.id));
+
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.white, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '${discogs.artist} - ${discogs.title} en posición #$position',
+                    style: GoogleFonts.poppins(fontSize: 13),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: AppTheme.successColor,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        setState(() => _isSaving = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al añadir el disco',
+                style: GoogleFonts.poppins(fontSize: 13)),
+            backgroundColor: AppTheme.errorColor,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Diálogo para elegir la posición donde insertar el disco
+  Future<int?> _askPosition(int maxCurrentPosition) async {
+    final maxPos = maxCurrentPosition + 1; // +1 = al final
+    int selectedPosition = maxPos;
+
+    return showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20)),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppTheme.secondaryColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.location_on_rounded,
+                        color: AppTheme.secondaryColor, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text('¿En qué posición?',
+                        style: GoogleFonts.archivoBlack(
+                            fontSize: 16,
+                            color: AppTheme.primaryColor)),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Los discos a partir de esta posición se desplazarán a la derecha.',
+                    style: GoogleFonts.robotoCondensed(
+                        fontSize: 13, color: Colors.grey[600]),
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      GestureDetector(
+                        onTap: selectedPosition > 1
+                            ? () => setDialogState(() => selectedPosition--)
+                            : null,
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: selectedPosition > 1
+                                ? AppTheme.primaryColor
+                                : Colors.grey[200],
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(Icons.remove,
+                              color: selectedPosition > 1
+                                  ? Colors.white
+                                  : Colors.grey[400],
+                              size: 20),
+                        ),
+                      ),
+                      const SizedBox(width: 20),
+                      Column(
+                        children: [
+                          Text('$selectedPosition',
+                              style: GoogleFonts.archivoBlack(
+                                  fontSize: 36, color: AppTheme.primaryColor)),
+                          Text(
+                            selectedPosition == maxPos
+                                ? 'Al final'
+                                : 'desde la izquierda',
+                            style: GoogleFonts.robotoCondensed(
+                                fontSize: 11, color: Colors.grey[500]),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(width: 20),
+                      GestureDetector(
+                        onTap: selectedPosition < maxPos
+                            ? () => setDialogState(() => selectedPosition++)
+                            : null,
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: selectedPosition < maxPos
+                                ? AppTheme.primaryColor
+                                : Colors.grey[200],
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(Icons.add,
+                              color: selectedPosition < maxPos
+                                  ? Colors.white
+                                  : Colors.grey[400],
+                              size: 20),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: Text('CANCELAR',
+                      style: GoogleFonts.archivoBlack(
+                          fontSize: 12, color: Colors.grey)),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, selectedPosition),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.secondaryColor,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: Text('INSERTAR AQUÍ',
+                      style: GoogleFonts.archivoBlack(
+                          fontSize: 12, color: Colors.white)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.85,
+      padding: EdgeInsets.only(bottom: bottom),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey[300],
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Título
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.secondaryColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.album_rounded,
+                      color: AppTheme.secondaryColor, size: 22),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('AÑADIR DISCO',
+                          style: GoogleFonts.archivoBlack(
+                              fontSize: 16,
+                              color: AppTheme.primaryColor)),
+                      Text('Busca en Discogs y añádelo a esta zona',
+                          style: GoogleFonts.robotoCondensed(
+                              fontSize: 12, color: Colors.grey[500])),
+                    ],
+                  ),
+                ),
+                // Botón foto (con loading)
+                GestureDetector(
+                  onTap: _isIdentifying ? null : _pickPhoto,
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: _isIdentifying
+                          ? AppTheme.accentColor
+                          : AppTheme.accentColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: _isIdentifying
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
+                          )
+                        : Icon(
+                            kIsWeb ? Icons.photo_library_rounded : Icons.camera_alt_rounded,
+                            color: AppTheme.accentColor,
+                            size: 22,
+                          ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Campo de búsqueda
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.grey[100],
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                          color: AppTheme.primaryColor.withOpacity(0.2)),
+                    ),
+                    child: TextField(
+                      controller: _searchController,
+                      style: GoogleFonts.robotoCondensed(fontSize: 15),
+                      textInputAction: TextInputAction.search,
+                      onSubmitted: (_) => _search(),
+                      decoration: InputDecoration(
+                        hintText: 'Artista, título del disco...',
+                        hintStyle: GoogleFonts.robotoCondensed(
+                            color: Colors.grey[400]),
+                        prefixIcon: const Icon(Icons.search_rounded,
+                            color: AppTheme.primaryColor, size: 22),
+                        border: InputBorder.none,
+                        contentPadding:
+                            const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                GestureDetector(
+                  onTap: _isSearching ? null : _search,
+                  child: Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryColor,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: _isSearching
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.search,
+                            color: Colors.white, size: 22),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Resultados
+          Expanded(
+            child: _isSaving
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(
+                            color: AppTheme.secondaryColor),
+                        const SizedBox(height: 16),
+                        Text('Añadiendo disco...',
+                            style: GoogleFonts.poppins(
+                                color: Colors.grey[500])),
+                      ],
+                    ),
+                  )
+                : _isIdentifying
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(40),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const SizedBox(
+                                width: 48,
+                                height: 48,
+                                child: CircularProgressIndicator(
+                                  color: AppTheme.accentColor,
+                                  strokeWidth: 3,
+                                ),
+                              ),
+                              const SizedBox(height: 20),
+                              Text('Identificando disco...',
+                                  style: GoogleFonts.archivoBlack(
+                                      fontSize: 14, color: AppTheme.primaryColor)),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Gemini está analizando la foto',
+                                style: GoogleFonts.robotoCondensed(
+                                    fontSize: 13, color: Colors.grey[400]),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : _results.isEmpty
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(40),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.search_rounded,
+                                      size: 48, color: Colors.grey[300]),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    _searchController.text.isEmpty
+                                        ? 'Busca un disco por artista o título'
+                                        : 'Sin resultados',
+                                    style: GoogleFonts.robotoCondensed(
+                                        fontSize: 14, color: Colors.grey[400]),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 20),
+                            itemCount: _results.length,
+                            itemBuilder: (_, i) =>
+                                _buildResultTile(_results[i]),
+                          ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResultTile(DiscogsAlbum album) {
+    final thumbSrc = _thumbUrl(album);
+
+    return GestureDetector(
+      onTap: () => _addAlbum(album),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.grey[50],
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.grey[200]!),
+        ),
+        child: Row(
+          children: [
+            // Cover
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: thumbSrc.isNotEmpty
+                  ? CachedNetworkImage(
+                      imageUrl: thumbSrc,
+                      width: 56,
+                      height: 56,
+                      fit: BoxFit.cover,
+                      placeholder: (_, __) => Container(
+                          width: 56, height: 56, color: Colors.grey[200]),
+                      errorWidget: (_, __, ___) => Container(
+                          width: 56,
+                          height: 56,
+                          color: Colors.grey[200],
+                          child: const Icon(Icons.album, color: Colors.grey)),
+                    )
+                  : Container(
+                      width: 56,
+                      height: 56,
+                      color: Colors.grey[200],
+                      child: const Icon(Icons.album,
+                          color: Colors.grey, size: 24),
+                    ),
+            ),
+            const SizedBox(width: 12),
+            // Info
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(album.title,
+                      style: GoogleFonts.poppins(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.primaryColor),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                  Text(album.artist,
+                      style: GoogleFonts.robotoCondensed(
+                          fontSize: 12, color: Colors.grey[600]),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                  if (album.yearString != null || album.format != null)
+                    Text(
+                      [
+                        if (album.yearString != null) album.yearString!,
+                        if (album.format != null) album.format!,
+                      ].join(' · '),
+                      style: GoogleFonts.robotoCondensed(
+                          fontSize: 11, color: Colors.grey[400]),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppTheme.secondaryColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.add_rounded,
+                  color: AppTheme.secondaryColor, size: 20),
+            ),
+          ],
+        ),
       ),
     );
   }

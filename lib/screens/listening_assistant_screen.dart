@@ -1189,48 +1189,61 @@ class _ListeningAssistantScreenState extends State<ListeningAssistantScreen>
           final album = entry.album;
           final timeAgo = _timeAgo(entry.playedAt);
 
-          return Container(
-            width: 105,
-            margin: const EdgeInsets.only(right: 12),
-            child: Column(
-              children: [
-                // Carátula
-                Stack(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(14),
-                      child: album.coverUrl != null
-                          ? CachedNetworkImage(
-                              imageUrl: album.coverUrl!,
-                              width: 95, height: 95, fit: BoxFit.cover,
-                              placeholder: (_, __) => Container(
-                                  width: 95, height: 95, color: Colors.grey[200],
-                                  child: const Icon(Icons.album, color: Colors.grey)),
-                            )
-                          : Container(
-                              width: 95, height: 95, color: Colors.grey[200],
-                              child: const Icon(Icons.album, color: Colors.grey)),
-                    ),
-                    // Badge de contexto
-                    if (entry.requestContext != null)
-                      Positioned(
-                        top: 4, right: 4,
-                        child: Container(
-                          padding: const EdgeInsets.all(4),
-                          decoration: const BoxDecoration(
-                            color: AppTheme.secondaryColor,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.headphones, color: Colors.white, size: 10),
-                        ),
-                      ),
-                  ],
+          return GestureDetector(
+            onTap: () async {
+              final albumLoc = AlbumWithLocation(album: album);
+              await Navigator.push(context, MaterialPageRoute(
+                builder: (_) => AlbumDetailScreen(
+                  albumWithLocation: albumLoc,
+                  onAlbumUpdated: (_) => _loadData(),
+                  onAlbumDeleted: (_) => _loadData(),
                 ),
-                const SizedBox(height: 6),
-                Text(album.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w600)),
-                Text(timeAgo, style: GoogleFonts.poppins(fontSize: 9, color: Colors.grey[400])),
-              ],
+              ));
+              _loadData();
+            },
+            child: Container(
+              width: 105,
+              margin: const EdgeInsets.only(right: 12),
+              child: Column(
+                children: [
+                  // Carátula
+                  Stack(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(14),
+                        child: album.coverUrl != null
+                            ? CachedNetworkImage(
+                                imageUrl: album.coverUrl!,
+                                width: 95, height: 95, fit: BoxFit.cover,
+                                placeholder: (_, __) => Container(
+                                    width: 95, height: 95, color: Colors.grey[200],
+                                    child: const Icon(Icons.album, color: Colors.grey)),
+                              )
+                            : Container(
+                                width: 95, height: 95, color: Colors.grey[200],
+                                child: const Icon(Icons.album, color: Colors.grey)),
+                      ),
+                      // Badge de contexto
+                      if (entry.requestContext != null)
+                        Positioned(
+                          top: 4, right: 4,
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: const BoxDecoration(
+                              color: AppTheme.secondaryColor,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.headphones, color: Colors.white, size: 10),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(album.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w600)),
+                  Text(timeAgo, style: GoogleFonts.poppins(fontSize: 9, color: Colors.grey[400])),
+                ],
+              ),
             ),
           );
         },

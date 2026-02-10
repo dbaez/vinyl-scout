@@ -462,6 +462,22 @@ class _ShelfDetailScreenState extends State<ShelfDetailScreen>
     );
   }
 
+  void _addAlbumToZone(ShelfZoneModel zone) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AddAlbumToZoneSheet(
+        zoneId: zone.id,
+        currentAlbumCount: zone.albumCount,
+        onAlbumAdded: (_) {
+          // Refrescar la estantería completa para actualizar conteos
+          _loadShelfDetails();
+        },
+      ),
+    );
+  }
+
   Future<void> _deleteZone(ShelfZoneModel zone) async {
     final l10n = AppLocalizations.of(context)!;
     final hasAlbums = (zone.albums?.length ?? 0) > 0;
@@ -1462,11 +1478,30 @@ class _ShelfDetailScreenState extends State<ShelfDetailScreen>
                 onSelected: (value) {
                   if (value == 'scan') {
                     _scanZone(zone);
+                  } else if (value == 'add_album') {
+                    _addAlbumToZone(zone);
                   } else if (value == 'delete') {
                     _deleteZone(zone);
                   }
                 },
                 itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 'add_album',
+                    child: Row(
+                      children: [
+                        Icon(Icons.album_rounded,
+                            color: AppTheme.accentColor, size: 22),
+                        const SizedBox(width: 12),
+                        Text(
+                          'Añadir disco',
+                          style: GoogleFonts.poppins(
+                            color: AppTheme.accentColor,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                   PopupMenuItem(
                     value: 'scan',
                     child: Row(
@@ -1475,7 +1510,7 @@ class _ShelfDetailScreenState extends State<ShelfDetailScreen>
                             color: AppTheme.secondaryColor, size: 22),
                         const SizedBox(width: 12),
                         Text(
-                          l10n?.scanZone ?? 'Scan zone',
+                          l10n?.scanZone ?? 'Escanear zona',
                           style: GoogleFonts.poppins(
                             color: AppTheme.secondaryColor,
                             fontWeight: FontWeight.w500,
@@ -1492,7 +1527,7 @@ class _ShelfDetailScreenState extends State<ShelfDetailScreen>
                             color: Colors.red[400], size: 22),
                         const SizedBox(width: 12),
                         Text(
-                          l10n?.deleteZone ?? 'Delete zone',
+                          l10n?.deleteZone ?? 'Eliminar zona',
                           style: GoogleFonts.poppins(
                             color: Colors.red[400],
                             fontWeight: FontWeight.w500,

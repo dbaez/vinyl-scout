@@ -1,5 +1,37 @@
 import '../services/discogs_service.dart';
 
+// ─────────────────────────────────────────────
+// Track de un vinilo (A1, A2, B1, etc.)
+// ─────────────────────────────────────────────
+class TrackEntry {
+  final String position; // "A1", "A2", "B1", "C1", etc.
+  final String title;
+  final String? duration; // "3:45"
+
+  const TrackEntry({
+    required this.position,
+    required this.title,
+    this.duration,
+  });
+
+  factory TrackEntry.fromJson(Map<String, dynamic> json) {
+    return TrackEntry(
+      position: json['position'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      duration: json['duration'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'position': position,
+    'title': title,
+    if (duration != null) 'duration': duration,
+  };
+
+  /// Extrae la letra de la cara: "A1" → "A", "B" → "B", "C3" → "C"
+  String get side => position.replaceAll(RegExp(r'[^A-Za-z]'), '');
+}
+
 /// Modelo de Álbum (El inventario real de vinilos)
 /// Representa un disco de vinilo en la colección del usuario
 class AlbumModel {
@@ -15,6 +47,7 @@ class AlbumModel {
   final List<String> styles;
   final int? positionIndex;  // Posición dentro del hueco (1, 2, 3...)
   final List<double>? embedding;  // Vector para recomendaciones de IA
+  final List<TrackEntry>? tracklist; // Tracklist por cara del vinilo
   final DateTime createdAt;
   final DateTime? lastPlayedAt;  // Para playlists inteligentes
 
@@ -31,6 +64,7 @@ class AlbumModel {
     this.styles = const [],
     this.positionIndex,
     this.embedding,
+    this.tracklist,
     required this.createdAt,
     this.lastPlayedAt,
   });
@@ -59,6 +93,9 @@ class AlbumModel {
       embedding: json['embedding'] != null
           ? List<double>.from((json['embedding'] as List).map((e) => (e as num).toDouble()))
           : null,
+      tracklist: json['tracklist'] != null
+          ? (json['tracklist'] as List).map((t) => TrackEntry.fromJson(t as Map<String, dynamic>)).toList()
+          : null,
       createdAt: DateTime.parse(json['created_at'] as String),
       lastPlayedAt: json['last_played_at'] != null
           ? DateTime.parse(json['last_played_at'] as String)
@@ -81,6 +118,7 @@ class AlbumModel {
       'styles': styles,
       'position_index': positionIndex,
       'embedding': embedding,
+      'tracklist': tracklist?.map((t) => t.toJson()).toList(),
       'created_at': createdAt.toIso8601String(),
       'last_played_at': lastPlayedAt?.toIso8601String(),
     };
@@ -100,6 +138,7 @@ class AlbumModel {
       'styles': styles,
       'position_index': positionIndex,
       'embedding': embedding,
+      if (tracklist != null) 'tracklist': tracklist!.map((t) => t.toJson()).toList(),
     };
   }
 
@@ -117,6 +156,7 @@ class AlbumModel {
     List<String>? styles,
     int? positionIndex,
     List<double>? embedding,
+    List<TrackEntry>? tracklist,
     DateTime? createdAt,
     DateTime? lastPlayedAt,
   }) {
@@ -133,9 +173,25 @@ class AlbumModel {
       styles: styles ?? this.styles,
       positionIndex: positionIndex ?? this.positionIndex,
       embedding: embedding ?? this.embedding,
+      tracklist: tracklist ?? this.tracklist,
       createdAt: createdAt ?? this.createdAt,
       lastPlayedAt: lastPlayedAt ?? this.lastPlayedAt,
     );
+  }
+
+  /// Verifica si el álbum tiene tracklist
+  bool get hasTracklist => tracklist != null && tracklist!.isNotEmpty;
+
+  /// Agrupa el tracklist por cara (A, B, C, D...)
+  /// Retorna un Map ordenado: {"A": [track1, track2], "B": [track3], ...}
+  Map<String, List<TrackEntry>> get tracksBySide {
+    if (tracklist == null || tracklist!.isEmpty) return {};
+    final map = <String, List<TrackEntry>>{};
+    for (final track in tracklist!) {
+      final side = track.side.isNotEmpty ? track.side : '?';
+      map.putIfAbsent(side, () => []).add(track);
+    }
+    return map;
   }
 
   /// Verifica si el álbum está sincronizado con Discogs

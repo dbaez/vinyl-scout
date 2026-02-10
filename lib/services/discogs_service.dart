@@ -298,6 +298,119 @@ class DiscogsService {
     }
   }
 
+  /// Busca el release de vinilo más completo (LP) para un artista/título.
+  /// Prioriza releases con formato Vinyl y más tracks.
+  Future<DiscogsAlbum?> searchVinylRelease({
+    required String artist,
+    required String title,
+  }) async {
+    try {
+      final cleanArtist = _cleanSearchTerm(artist);
+      final cleanTitle = _cleanSearchTerm(title);
+      if (cleanArtist.isEmpty && cleanTitle.isEmpty) return null;
+
+      final query = '$cleanArtist $cleanTitle';
+      debugPrint('Discogs vinyl search: $query');
+
+      // Buscar con formato Vinyl para mejor match
+      final response = await _search(query, perPage: 10);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final results = data['results'] as List?;
+
+        if (results != null && results.isNotEmpty) {
+          // Priorizar: 1) formato Vinyl/LP, 2) más páginas (= más tracks)
+          DiscogsAlbum? bestVinyl;
+          DiscogsAlbum? fallback;
+
+          for (final result in results) {
+            final formatList = result['format'] as List?;
+            final formats = formatList?.map((f) => f.toString().toLowerCase()).toList() ?? [];
+            final coverImage = result['cover_image'] as String?;
+            final hasCover = coverImage != null && coverImage.isNotEmpty && !coverImage.contains('spacer.gif');
+
+            if (!hasCover) continue;
+
+            final album = DiscogsAlbum.fromJson(result as Map<String, dynamic>);
+
+            // Es un vinilo LP?
+            final isVinyl = formats.any((f) => f.contains('vinyl') || f.contains('lp'));
+
+            if (isVinyl) {
+              if (bestVinyl == null) {
+                bestVinyl = album;
+              }
+            } else if (fallback == null) {
+              fallback = album;
+            }
+          }
+
+          return bestVinyl ?? fallback;
+        }
+      }
+    } catch (e) {
+      debugPrint('Error searching vinyl release: $e');
+    }
+    return null;
+  }
+
+  /// Obtiene el tracklist de un release de Discogs por su ID.
+  /// Retorna una lista de maps con {position, title, duration} solo para tracks reales.
+  Future<List<Map<String, dynamic>>?> fetchReleaseTracklist(int discogsId) async {
+    try {
+      http.Response response;
+
+      if (kIsWeb) {
+        // En web: usar proxy Edge Function
+        final edgeUrl = '${EnvConfig.supabaseUrl}/functions/v1/discogs-proxy?release_id=$discogsId';
+        debugPrint('Discogs release (edge): $discogsId');
+        response = await http.get(
+          Uri.parse(edgeUrl),
+          headers: {
+            'Authorization': 'Bearer ${EnvConfig.supabaseAnonKey}',
+            'Content-Type': 'application/json',
+          },
+        );
+      } else {
+        // En móvil/desktop: directo a Discogs
+        final uri = Uri.parse('$_baseUrl/releases/$discogsId');
+        response = await http.get(
+          uri,
+          headers: {
+            'User-Agent': _userAgent,
+            if (_token.isNotEmpty) 'Authorization': 'Discogs token=$_token',
+          },
+        );
+      }
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final tracklist = data['tracklist'] as List?;
+
+        if (tracklist != null && tracklist.isNotEmpty) {
+          // Filtrar solo tracks reales (type_ == "track" o sin type_)
+          return tracklist
+              .where((t) {
+                final type = t['type_'] as String? ?? 'track';
+                return type == 'track';
+              })
+              .map((t) => <String, dynamic>{
+                    'position': t['position'] as String? ?? '',
+                    'title': t['title'] as String? ?? '',
+                    'duration': t['duration'] as String?,
+                  })
+              .toList();
+        }
+      } else {
+        debugPrint('Discogs release error: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('Error fetching release tracklist: $e');
+    }
+    return null;
+  }
+
   /// Limpia un término de búsqueda
   String _cleanSearchTerm(String term) {
     return term

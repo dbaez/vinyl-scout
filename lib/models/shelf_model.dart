@@ -7,6 +7,7 @@ class ShelfModel {
   final String userId;
   final String name;
   final String masterPhotoUrl;
+  final bool isPublic;
   final DateTime createdAt;
   
   /// Lista de zonas (huecos) de la estantería
@@ -18,6 +19,7 @@ class ShelfModel {
     required this.userId,
     required this.name,
     required this.masterPhotoUrl,
+    this.isPublic = false,
     required this.createdAt,
     this.zones,
   });
@@ -39,6 +41,7 @@ class ShelfModel {
       userId: json['user_id'] as String,
       name: json['name'] as String,
       masterPhotoUrl: json['master_photo_url'] as String,
+      isPublic: json['is_public'] as bool? ?? false,
       createdAt: DateTime.parse(json['created_at'] as String),
       zones: parsedZones,
     );
@@ -51,6 +54,7 @@ class ShelfModel {
       'user_id': userId,
       'name': name,
       'master_photo_url': masterPhotoUrl,
+      'is_public': isPublic,
       'created_at': createdAt.toIso8601String(),
     };
   }
@@ -61,6 +65,7 @@ class ShelfModel {
       'user_id': userId,
       'name': name,
       'master_photo_url': masterPhotoUrl,
+      'is_public': isPublic,
     };
   }
 
@@ -70,6 +75,7 @@ class ShelfModel {
     String? userId,
     String? name,
     String? masterPhotoUrl,
+    bool? isPublic,
     DateTime? createdAt,
     List<ShelfZoneModel>? zones,
   }) {
@@ -78,6 +84,7 @@ class ShelfModel {
       userId: userId ?? this.userId,
       name: name ?? this.name,
       masterPhotoUrl: masterPhotoUrl ?? this.masterPhotoUrl,
+      isPublic: isPublic ?? this.isPublic,
       createdAt: createdAt ?? this.createdAt,
       zones: zones ?? this.zones,
     );

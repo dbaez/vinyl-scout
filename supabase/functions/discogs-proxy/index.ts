@@ -57,6 +57,43 @@ serve(async (req: Request) => {
       });
     }
 
+    // === Modo Release (tracklist) ===
+    // Si recibe ?release_id=..., obtiene los datos del release incluyendo tracklist
+    const releaseId = url.searchParams.get("release_id");
+    if (releaseId) {
+      if (!DISCOGS_TOKEN) {
+        return new Response(
+          JSON.stringify({ error: "DISCOGS_TOKEN not configured" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const releaseUrl = `${DISCOGS_BASE_URL}/releases/${releaseId}`;
+      console.log(`Discogs proxy: fetching release ${releaseId}`);
+
+      const response = await fetch(releaseUrl, {
+        headers: {
+          "User-Agent": "VinylScout/1.0",
+          "Authorization": `Discogs token=${DISCOGS_TOKEN}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Discogs release error (${response.status}): ${errorText.substring(0, 300)}`);
+        return new Response(
+          JSON.stringify({ error: `Discogs ${response.status}: ${response.statusText}` }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const data = await response.json();
+      return new Response(
+        JSON.stringify(data),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // === Modo API Search ===
     const query = url.searchParams.get("q") || "";
     const type = url.searchParams.get("type") || "release";

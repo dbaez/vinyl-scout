@@ -39,6 +39,56 @@ class GeminiService {
     return response;
   }
   
+  /// Identifica UN solo disco a partir de una foto (portada, lomo, contraportada)
+  /// Retorna el primer DetectedAlbum encontrado o null si no se identifica
+  Future<DetectedAlbum?> identifySingleAlbum(String imageUrl) async {
+    try {
+      // Refrescar sesión
+      try {
+        await _supabase.auth.refreshSession();
+      } catch (_) {}
+
+      debugPrint('🔍 Identificando disco individual desde foto...');
+
+      final response = await _supabase.functions.invoke(
+        'process-vinyls',
+        body: {
+          'imageUrl': imageUrl,
+          'mode': 'single_album',
+        },
+      ).timeout(
+        _edgeFunctionTimeout,
+        onTimeout: () => throw TimeoutException('Timeout identificando disco'),
+      );
+
+      if (response.status != 200) {
+        throw Exception('Error en Edge Function: ${response.status}');
+      }
+
+      Map<String, dynamic> data;
+      if (response.data is Map<String, dynamic>) {
+        data = response.data as Map<String, dynamic>;
+      } else if (response.data is String) {
+        data = jsonDecode(response.data as String) as Map<String, dynamic>;
+      } else {
+        data = jsonDecode(jsonEncode(response.data)) as Map<String, dynamic>;
+      }
+
+      final geminiResponse = GeminiResponse.fromJson(data);
+      if (geminiResponse.hasAlbums) {
+        final album = geminiResponse.albums.first;
+        debugPrint('✅ Disco identificado: ${album.artist} - ${album.title} (${album.confidencePercent})');
+        return album;
+      }
+
+      debugPrint('⚠️ No se pudo identificar el disco');
+      return null;
+    } catch (e) {
+      debugPrint('Error identificando disco: $e');
+      return null;
+    }
+  }
+
   /// Limpia la caché (útil si se quiere forzar un re-escaneo)
   static void clearCache() {
     _cache.clear();

@@ -7,9 +7,11 @@ import 'package:shimmer/shimmer.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/album_model.dart';
+import '../models/album_photo_model.dart';
 import '../models/shelf_zone_model.dart';
 import '../services/album_service.dart';
 import '../services/discogs_service.dart';
+import '../services/photo_service.dart';
 import '../services/shelf_service.dart';
 import '../theme/app_theme.dart';
 import 'zone_inventory_screen.dart';
@@ -63,6 +65,16 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
   List<DiscogsAlbum> _searchResults = [];
   DiscogsAlbum? _selectedResult;
 
+  // Tracklist
+  bool _isLoadingTracklist = false;
+  bool _showTracklist = false;
+
+  // Fotos del vinilo
+  final _photoService = PhotoService();
+  List<AlbumPhotoModel> _photos = [];
+  bool _isLoadingPhotos = false;
+  bool _photosLoaded = false;
+
   @override
   void initState() {
     super.initState();
@@ -77,6 +89,7 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
       vsync: this,
       duration: const Duration(seconds: 3),
     );
+    _loadPhotos();
   }
 
   @override
@@ -94,6 +107,75 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
           _artistController.text.trim() != _album.artist ||
           _titleController.text.trim() != _album.title;
     });
+  }
+
+  /// Carga el tracklist desde Discogs si no lo tiene.
+  /// Si no tiene discogs_id, primero busca el release por artista+título.
+  Future<void> _loadTracklistIfNeeded() async {
+    // Si ya tiene tracklist con suficientes tracks, no recargar
+    if (_album.hasTracklist && _album.tracklist!.length >= 5) return;
+    if (_isLoadingTracklist) return;
+
+    setState(() => _isLoadingTracklist = true);
+
+    try {
+      int? discogsId = _album.discogsId;
+
+      // Si tiene un tracklist corto (probable single), buscar un release mejor
+      final hasShortTracklist = _album.hasTracklist && _album.tracklist!.length < 5;
+
+      // Si no tiene discogs_id o tiene tracklist corto, buscar LP
+      if (discogsId == null || hasShortTracklist) {
+        debugPrint('Tracklist: buscando discogs_id para "${_album.artist} - ${_album.title}"');
+        final result = await _discogsService.searchVinylRelease(
+          artist: _album.artist,
+          title: _album.title,
+        );
+        if (result != null) {
+          discogsId = result.id;
+          // Guardar el discogs_id para futuras consultas
+          await _albumService.updateAlbum(_album.id, {'discogs_id': discogsId});
+          _album = _album.copyWith(discogsId: discogsId);
+          debugPrint('Tracklist: discogs_id encontrado → $discogsId');
+        }
+      }
+
+      if (discogsId == null) {
+        debugPrint('Tracklist: no se encontró discogs_id');
+        if (mounted) setState(() => _isLoadingTracklist = false);
+        return;
+      }
+
+      final tracklistData = await _discogsService.fetchReleaseTracklist(discogsId);
+
+      if (tracklistData != null && tracklistData.isNotEmpty && mounted) {
+        final tracks = tracklistData
+            .map((t) => TrackEntry.fromJson(t))
+            .toList();
+
+        // Guardar en la BD para cacheo
+        await _albumService.updateAlbum(_album.id, {
+          'tracklist': tracklistData,
+        });
+
+        final updatedAlbum = _album.copyWith(tracklist: tracks);
+
+        if (widget.zoneAlbums != null) {
+          final index = widget.zoneAlbums!.indexWhere((a) => a.id == _album.id);
+          if (index != -1) widget.zoneAlbums![index] = updatedAlbum;
+        }
+
+        setState(() {
+          _album = updatedAlbum;
+          _isLoadingTracklist = false;
+        });
+      } else {
+        if (mounted) setState(() => _isLoadingTracklist = false);
+      }
+    } catch (e) {
+      debugPrint('Error loading tracklist: $e');
+      if (mounted) setState(() => _isLoadingTracklist = false);
+    }
   }
 
   /// Navega al disco en la posición indicada
@@ -119,6 +201,8 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
       _hasChanges = false;
       _isEditing = false;
       _isMarkedAsPlaying = false;
+      _isLoadingTracklist = false;
+      _showTracklist = false;
       _searchResults = [];
       _selectedResult = null;
       _artistController.text = targetAlbum.artist;
@@ -234,6 +318,7 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
         'artist': result.artist,
         'cover_url': result.imageUrl,
         'year': result.year,
+        'discogs_id': result.id,
         if (result.genres.isNotEmpty) 'genres': result.genres,
         if (result.styles.isNotEmpty) 'styles': result.styles,
       };
@@ -246,6 +331,7 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
           artist: result.artist,
           year: result.year,
           coverUrl: result.imageUrl,
+          discogsId: result.id,
           genres: result.genres.isNotEmpty ? result.genres : null,
           styles: result.styles.isNotEmpty ? result.styles : null,
         );
@@ -455,6 +541,12 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
                           
                           // Botón "Escuchando ahora"
                           _buildPlayButton(),
+                          
+                          // Tracklist por cara (en demanda)
+                          _buildTracklistToggle(),
+
+                          // Fotos del vinilo
+                          _buildPhotoGallery(),
                           
                           const SizedBox(height: 20),
                           
@@ -705,12 +797,16 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
           children: [
             Icon(icon, size: 14, color: color),
             const SizedBox(width: 6),
-            Text(
-              text,
-              style: GoogleFonts.poppins(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: Colors.white,
+            Flexible(
+              child: Text(
+                text,
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             if (canFilter) ...[
@@ -1067,6 +1163,203 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
     );
   }
 
+  Widget _buildTracklistToggle() {
+    // Si ya está expandido, mostrar la sección completa
+    if (_showTracklist) {
+      if (_album.hasTracklist) return _buildTracklistSection();
+      if (_isLoadingTracklist) return _buildTracklistSection();
+      // Ya se intentó cargar pero no hay tracklist
+      return const SizedBox.shrink();
+    }
+
+    // Botón para mostrar tracklist
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(32, 16, 32, 0),
+      child: SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: () {
+            setState(() => _showTracklist = true);
+            if (!_album.hasTracklist) {
+              _loadTracklistIfNeeded();
+            }
+          },
+          icon: const Icon(Icons.queue_music_rounded, size: 20),
+          label: Text(
+            'Ver tracklist',
+            style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 13),
+          ),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Colors.white,
+            side: BorderSide(color: Colors.white.withOpacity(0.25)),
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTracklistSection() {
+    final textShadows = [
+      Shadow(color: Colors.black.withOpacity(0.8), blurRadius: 8, offset: const Offset(0, 2)),
+    ];
+    final tracksBySide = _album.tracksBySide;
+    // Determinar si hay más de 2 caras → formato "Disco X - Cara Y"
+    final totalSides = tracksBySide.keys.length;
+    final useDiscFormat = totalSides > 2;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.5),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white.withOpacity(0.12)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header con botón colapsar
+            GestureDetector(
+              onTap: () => setState(() => _showTracklist = false),
+              child: Row(
+                children: [
+                  Icon(Icons.queue_music_rounded, color: AppTheme.primaryColor, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'TRACKLIST',
+                      style: GoogleFonts.archivoBlack(
+                        fontSize: 15,
+                        color: Colors.white,
+                        letterSpacing: 1.2,
+                        shadows: textShadows,
+                      ),
+                    ),
+                  ),
+                  Icon(Icons.keyboard_arrow_up_rounded, color: Colors.white.withOpacity(0.5), size: 24),
+                ],
+              ),
+            ),
+
+            if (_isLoadingTracklist) ...[
+              const SizedBox(height: 20),
+              Center(
+                child: Column(
+                  children: [
+                    SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: AppTheme.primaryColor,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Cargando tracklist…',
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        color: Colors.white.withOpacity(0.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ] else ...[
+              // Tracks agrupados por cara
+              ...tracksBySide.entries.map((entry) {
+                final side = entry.key;
+                final tracks = entry.value;
+                // Para formato multi-disco: A/B = Disco 1, C/D = Disco 2, etc.
+                String sideLabel;
+                if (useDiscFormat) {
+                  final sideIndex = tracksBySide.keys.toList().indexOf(side);
+                  final discNumber = (sideIndex ~/ 2) + 1;
+                  final discSide = sideIndex % 2 == 0 ? 'A' : 'B';
+                  sideLabel = 'DISCO $discNumber — CARA $discSide';
+                } else {
+                  sideLabel = 'CARA $side';
+                }
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 16),
+                    // Etiqueta de cara
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white.withOpacity(0.25)),
+                      ),
+                      child: Text(
+                        sideLabel,
+                        style: GoogleFonts.archivoBlack(
+                          fontSize: 11,
+                          color: Colors.white.withOpacity(0.85),
+                          letterSpacing: 1.0,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    // Tracks de esta cara
+                    ...tracks.map((track) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          // Posición
+                          SizedBox(
+                            width: 32,
+                            child: Text(
+                              track.position,
+                              style: GoogleFonts.robotoCondensed(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white.withOpacity(0.5),
+                              ),
+                            ),
+                          ),
+                          // Título
+                          Expanded(
+                            child: Text(
+                              track.title,
+                              style: GoogleFonts.poppins(
+                                fontSize: 13,
+                                color: Colors.white,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          // Duración
+                          if (track.duration != null && track.duration!.isNotEmpty) ...[
+                            const SizedBox(width: 8),
+                            Text(
+                              track.duration!,
+                              style: GoogleFonts.robotoCondensed(
+                                fontSize: 12,
+                                color: Colors.white.withOpacity(0.4),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    )),
+                  ],
+                );
+              }),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildPlayButton() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -1225,6 +1518,410 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
     );
   }
 
+  // ─── GALERÍA DE FOTOS ───────────────────────
+
+  Future<void> _loadPhotos() async {
+    if (_isLoadingPhotos || _photosLoaded) return;
+    setState(() => _isLoadingPhotos = true);
+    try {
+      final photos = await _photoService.getAlbumPhotos(_album.id);
+      if (mounted) {
+        setState(() {
+          _photos = photos;
+          _isLoadingPhotos = false;
+          _photosLoaded = true;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoadingPhotos = false;
+          _photosLoaded = true;
+        });
+      }
+    }
+  }
+
+  Future<void> _addPhoto() async {
+    final source = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppTheme.backgroundColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('AÑADIR FOTO',
+                  style: GoogleFonts.archivoBlack(
+                      fontSize: 16, color: AppTheme.primaryColor)),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accentColor,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.primaryColor, width: 2),
+                  ),
+                  child: const Icon(Icons.camera_alt, color: Colors.white, size: 22),
+                ),
+                title: Text('CÁMARA',
+                    style: GoogleFonts.archivoBlack(
+                        fontSize: 13, color: AppTheme.primaryColor)),
+                subtitle: Text('Haz una foto ahora',
+                    style: GoogleFonts.robotoCondensed(color: Colors.grey[600])),
+                onTap: () => Navigator.pop(ctx, 'camera'),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppTheme.secondaryColor,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.primaryColor, width: 2),
+                  ),
+                  child: const Icon(Icons.photo_library, color: Colors.white, size: 22),
+                ),
+                title: Text('GALERÍA',
+                    style: GoogleFonts.archivoBlack(
+                        fontSize: 13, color: AppTheme.primaryColor)),
+                subtitle: Text('Elige de tu galería',
+                    style: GoogleFonts.robotoCondensed(color: Colors.grey[600])),
+                onTap: () => Navigator.pop(ctx, 'gallery'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (source == null) return;
+
+    final file = source == 'camera'
+        ? await _photoService.takePhoto()
+        : await _photoService.pickFromGallery();
+
+    if (file == null) return;
+
+    // Caption opcional
+    final captionController = TextEditingController();
+    final caption = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.backgroundColor,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: AppTheme.primaryColor, width: 3),
+        ),
+        title: Text('DESCRIPCIÓN (OPCIONAL)',
+            style: GoogleFonts.archivoBlack(
+                fontSize: 14, color: AppTheme.primaryColor)),
+        content: TextField(
+          controller: captionController,
+          maxLength: 100,
+          style: GoogleFonts.robotoCondensed(fontSize: 14),
+          decoration: InputDecoration(
+            hintText: 'Ej: Primera edición UK 1977',
+            hintStyle: GoogleFonts.robotoCondensed(color: Colors.grey[400]),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, ''),
+            child: Text('SALTAR',
+                style: GoogleFonts.archivoBlack(fontSize: 12, color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, captionController.text.trim()),
+            child: Text('SUBIR',
+                style: GoogleFonts.archivoBlack(
+                    fontSize: 12, color: AppTheme.accentColor)),
+          ),
+        ],
+      ),
+    );
+
+    if (caption == null) return; // Canceló
+
+    HapticFeedback.mediumImpact();
+    setState(() => _isLoadingPhotos = true);
+
+    final result = await _photoService.addPhoto(
+      albumId: _album.id,
+      file: file,
+      caption: caption.isNotEmpty ? caption : null,
+    );
+
+    if (result != null && mounted) {
+      setState(() {
+        _photos.insert(0, result);
+        _isLoadingPhotos = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white, size: 18),
+              const SizedBox(width: 10),
+              Text('Foto añadida', style: GoogleFonts.poppins(fontSize: 13)),
+            ],
+          ),
+          backgroundColor: AppTheme.successColor,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    } else {
+      if (mounted) setState(() => _isLoadingPhotos = false);
+    }
+  }
+
+  Future<void> _deletePhoto(AlbumPhotoModel photo) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.backgroundColor,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: AppTheme.primaryColor, width: 3),
+        ),
+        title: Text('ELIMINAR FOTO',
+            style: GoogleFonts.archivoBlack(
+                fontSize: 16, color: AppTheme.primaryColor)),
+        content: Text('¿Eliminar esta foto?',
+            style: GoogleFonts.robotoCondensed(fontSize: 14)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('CANCELAR',
+                style: GoogleFonts.archivoBlack(fontSize: 12, color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('ELIMINAR',
+                style: GoogleFonts.archivoBlack(
+                    fontSize: 12, color: AppTheme.errorColor)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      HapticFeedback.mediumImpact();
+      final success = await _photoService.deletePhoto(photo);
+      if (success && mounted) {
+        setState(() => _photos.removeWhere((p) => p.id == photo.id));
+      }
+    }
+  }
+
+  void _showFullPhoto(AlbumPhotoModel photo) {
+    final index = _photos.indexOf(photo);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _PhotoPageViewer(
+          photos: _photos,
+          initialIndex: index >= 0 ? index : 0,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPhotoGallery() {
+    // Mientras carga, spinner sutil
+    if (_isLoadingPhotos && !_photosLoaded) {
+      return const Padding(
+        padding: EdgeInsets.fromLTRB(24, 16, 24, 0),
+        child: Center(
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(
+                strokeWidth: 2, color: Colors.white),
+          ),
+        ),
+      );
+    }
+
+    // Sin fotos → sólo botón para añadir (compacto)
+    if (_photos.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+        child: SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _addPhoto,
+            icon: const Icon(Icons.add_a_photo, size: 18),
+            label: Text('Añadir fotos de mi vinilo',
+                style: GoogleFonts.poppins(
+                    fontWeight: FontWeight.w600, fontSize: 13)),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white,
+              side: BorderSide(color: Colors.white.withOpacity(0.25)),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Con fotos → mostrar directamente
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white.withOpacity(0.12)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                const Icon(Icons.photo_camera_rounded,
+                    color: Colors.white, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text('MIS FOTOS',
+                      style: GoogleFonts.archivoBlack(
+                        fontSize: 14,
+                        color: Colors.white,
+                        letterSpacing: 1.0,
+                      )),
+                ),
+                // Botón añadir
+                GestureDetector(
+                  onTap: _addPhoto,
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: AppTheme.secondaryColor,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.add_a_photo,
+                        color: Colors.white, size: 18),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // Grid de fotos
+            SizedBox(
+              height: 100,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                itemCount: _photos.length + 1,
+                itemBuilder: (_, i) {
+                  if (i == _photos.length) {
+                    return GestureDetector(
+                      onTap: _addPhoto,
+                      child: Container(
+                        width: 100,
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                              color: Colors.white.withOpacity(0.2)),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.add_a_photo,
+                                color: Colors.white.withOpacity(0.4),
+                                size: 24),
+                            const SizedBox(height: 4),
+                            Text('Añadir',
+                                style: GoogleFonts.robotoCondensed(
+                                    fontSize: 10,
+                                    color: Colors.white.withOpacity(0.4))),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+
+                  final photo = _photos[i];
+                  return GestureDetector(
+                    onTap: () => _showFullPhoto(photo),
+                    onLongPress: () => _deletePhoto(photo),
+                    child: Container(
+                      width: 100,
+                      margin: const EdgeInsets.only(right: 8),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                            color: Colors.white.withOpacity(0.2), width: 1),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          CachedNetworkImage(
+                            imageUrl: photo.photoUrl,
+                            fit: BoxFit.cover,
+                            placeholder: (_, __) => Container(
+                              color: Colors.grey[900],
+                              child: const Center(
+                                child: SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 1.5,
+                                      color: Colors.white),
+                                ),
+                              ),
+                            ),
+                            errorWidget: (_, __, ___) => Container(
+                              color: Colors.grey[900],
+                              child: const Icon(Icons.broken_image,
+                                  color: Colors.grey, size: 20),
+                            ),
+                          ),
+                          if (photo.caption != null &&
+                              photo.caption!.isNotEmpty)
+                            Positioned(
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              child: Container(
+                                padding: const EdgeInsets.all(4),
+                                color: Colors.black.withOpacity(0.6),
+                                child: Text(photo.caption!,
+                                    style: GoogleFonts.robotoCondensed(
+                                        fontSize: 8, color: Colors.white),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text('Mantén pulsado para eliminar',
+                style: GoogleFonts.robotoCondensed(
+                    fontSize: 10, color: Colors.white.withOpacity(0.3))),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildFindMyVinyl() {
     final location = widget.albumWithLocation;
     final position = _album.positionIndex;
@@ -1236,8 +1933,8 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: const Color(0xFF1A1A2E),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: AppTheme.primaryColor.withOpacity(0.4)),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white.withOpacity(0.12)),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(0.3),
@@ -1246,113 +1943,50 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
             ),
           ],
         ),
-        child: Column(
+        child: Row(
           children: [
-            // Header
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppTheme.primaryColor,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: const Icon(Icons.location_on_rounded, color: Colors.white, size: 24),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'FIND MY VINYL',
-                        style: GoogleFonts.poppins(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.primaryColor,
-                          letterSpacing: 1.5,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        location.locationText,
-                        style: GoogleFonts.poppins(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (location.shelfId != null)
-                  Icon(
-                    Icons.arrow_forward_ios,
-                    color: Colors.white.withOpacity(0.5),
-                    size: 18,
-                  ),
-              ],
+            // Icono de ubicación
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.location_on_rounded, color: Colors.white, size: 22),
             ),
-            
-            // Visualización de posición
-            if (position != null) ...[
-              const SizedBox(height: 20),
-              
-              // Indicador visual de posición
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  children: [
+            const SizedBox(width: 14),
+            // Info: ubicación + posición
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    location.locationText,
+                    style: GoogleFonts.poppins(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  if (position != null) ...[
+                    const SizedBox(height: 2),
                     Text(
-                      'Posición en la estantería',
+                      'Posición #$position desde la izquierda',
                       style: GoogleFonts.poppins(
                         fontSize: 12,
-                        color: Colors.white.withOpacity(0.6),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    
-                    // Visualización de discos (navegable)
-                    _buildAlbumCarousel(position),
-                    
-                    const SizedBox(height: 12),
-                    
-                    // Texto explicativo — usa el mismo position que el carrusel
-                    Text(
-                      'Disco #$position desde la izquierda',
-                      style: GoogleFonts.poppins(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white.withOpacity(0.8),
+                        color: Colors.white.withOpacity(0.5),
                       ),
                     ),
                   ],
-                ),
+                ],
               ),
-              
-              // Botón para ir a la zona
-              if (_album.zoneId != null) ...[
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _navigateToZone,
-                    icon: const Icon(Icons.grid_view_rounded, size: 18),
-                    label: Text('Ver zona completa', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      side: BorderSide(color: Colors.white.withOpacity(0.3)),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                    ),
-                  ),
-                ),
-              ],
-            ],
+            ),
+            if (location.shelfId != null)
+              Icon(
+                Icons.arrow_forward_ios,
+                color: Colors.white.withOpacity(0.4),
+                size: 16,
+              ),
           ],
         ),
       ),
@@ -1555,5 +2189,205 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
     final months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
                     'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
     return '${date.day} ${months[date.month - 1]} ${date.year}';
+  }
+}
+
+/// Visor de fotos con swipe horizontal (PageView)
+class _PhotoPageViewer extends StatefulWidget {
+  final List<AlbumPhotoModel> photos;
+  final int initialIndex;
+
+  const _PhotoPageViewer({
+    required this.photos,
+    required this.initialIndex,
+  });
+
+  @override
+  State<_PhotoPageViewer> createState() => _PhotoPageViewerState();
+}
+
+class _PhotoPageViewerState extends State<_PhotoPageViewer> {
+  late PageController _pageController;
+  late int _currentIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: widget.initialIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final padding = MediaQuery.of(context).padding;
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          // PageView de fotos
+          PageView.builder(
+            controller: _pageController,
+            itemCount: widget.photos.length,
+            onPageChanged: (i) => setState(() => _currentIndex = i),
+            itemBuilder: (_, i) {
+              final photo = widget.photos[i];
+              return InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 4.0,
+                child: Center(
+                  child: CachedNetworkImage(
+                    imageUrl: photo.photoUrl,
+                    fit: BoxFit.contain,
+                    placeholder: (_, __) => const Center(
+                      child: CircularProgressIndicator(color: Colors.white),
+                    ),
+                    errorWidget: (_, __, ___) => const Icon(
+                        Icons.broken_image,
+                        color: Colors.grey,
+                        size: 48),
+                  ),
+                ),
+              );
+            },
+          ),
+
+          // Botón cerrar
+          Positioned(
+            top: padding.top + 12,
+            right: 16,
+            child: GestureDetector(
+              onTap: () => Navigator.pop(context),
+              child: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.close,
+                    color: Colors.white, size: 22),
+              ),
+            ),
+          ),
+
+          // Indicador de posición (1/3)
+          if (widget.photos.length > 1)
+            Positioned(
+              top: padding.top + 16,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.6),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Text(
+                    '${_currentIndex + 1} / ${widget.photos.length}',
+                    style: GoogleFonts.robotoCondensed(
+                        fontSize: 13,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+            ),
+
+          // Caption de la foto actual
+          if (widget.photos[_currentIndex].caption != null &&
+              widget.photos[_currentIndex].caption!.isNotEmpty)
+            Positioned(
+              bottom: padding.bottom + 90,
+              left: 24,
+              right: 24,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.7),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  widget.photos[_currentIndex].caption!,
+                  style: GoogleFonts.poppins(
+                      fontSize: 14, color: Colors.white),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+
+          // Tira de miniaturas abajo
+          if (widget.photos.length > 1)
+            Positioned(
+              bottom: padding.bottom + 16,
+              left: 0,
+              right: 0,
+              child: SizedBox(
+                height: 60,
+                child: Center(
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    shrinkWrap: true,
+                    itemCount: widget.photos.length,
+                    itemBuilder: (_, i) {
+                      final isActive = i == _currentIndex;
+                      return GestureDetector(
+                        onTap: () {
+                          _pageController.animateToPage(i,
+                              duration: const Duration(milliseconds: 300),
+                              curve: Curves.easeInOut);
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          width: isActive ? 60 : 48,
+                          height: isActive ? 60 : 48,
+                          margin: const EdgeInsets.symmetric(horizontal: 4),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isActive
+                                  ? Colors.white
+                                  : Colors.white.withOpacity(0.3),
+                              width: isActive ? 2.5 : 1,
+                            ),
+                            boxShadow: isActive
+                                ? [
+                                    BoxShadow(
+                                      color: Colors.white.withOpacity(0.3),
+                                      blurRadius: 8,
+                                    )
+                                  ]
+                                : null,
+                          ),
+                          clipBehavior: Clip.antiAlias,
+                          child: Opacity(
+                            opacity: isActive ? 1.0 : 0.5,
+                            child: CachedNetworkImage(
+                              imageUrl: widget.photos[i].photoUrl,
+                              fit: BoxFit.cover,
+                              placeholder: (_, __) => Container(
+                                  color: Colors.grey[900]),
+                              errorWidget: (_, __, ___) => Container(
+                                  color: Colors.grey[900]),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }

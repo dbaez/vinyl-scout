@@ -43,7 +43,7 @@ serve(async (req) => {
   }
 
   try {
-    const { imageUrl, reanalyzePositions, spineCoords } = await req.json();
+    const { imageUrl, reanalyzePositions, spineCoords, mode } = await req.json();
 
     if (!imageUrl) {
       throw new Error("imageUrl es requerido");
@@ -54,7 +54,8 @@ serve(async (req) => {
     }
 
     const fnStart = Date.now();
-    console.log("Procesando imagen:", imageUrl);
+    const isSingleAlbum = mode === "single_album";
+    console.log(`Procesando imagen (${isSingleAlbum ? 'single_album' : 'zone'}):`, imageUrl);
 
     // Descargar la imagen directamente (ya viene comprimida desde el cliente Flutter)
     const imageResponse = await fetch(imageUrl);
@@ -80,8 +81,21 @@ serve(async (req) => {
     // Elegir prompt según modo
     const isReanalyze = reanalyzePositions && Array.isArray(reanalyzePositions) && reanalyzePositions.length > 0;
     let prompt: string;
-    
-    if (isReanalyze && spineCoords) {
+
+    if (isSingleAlbum) {
+      // Modo: identificar UN solo disco desde su portada, lomo, contraportada o foto
+      prompt = `Identifica el disco de vinilo en esta imagen. Puede ser una portada, un lomo, una contraportada, o una foto del disco.
+
+REGLAS:
+- Identifica EXACTAMENTE 1 disco.
+- Devuelve el artista y título lo más preciso posible.
+- Si ves texto en la imagen (portada, lomo, sello), úsalo para identificar.
+- Si reconoces el diseño visual de una portada conocida, identifícalo.
+- Confianza: 0.95+ texto claro, 0.7-0.94 reconocimiento visual, 0.3-0.69 parcial, 0.1-0.29 no identificable.
+
+Responde SOLO JSON válido (sin markdown):
+{"artist":"Nombre del Artista","title":"Título del Álbum","year":2020,"confidence":0.9}`;
+    } else if (isReanalyze && spineCoords) {
       const zonesDesc = reanalyzePositions.map((pos: number) => {
         const coord = spineCoords[pos];
         if (coord) {
@@ -112,7 +126,7 @@ Responde SOLO JSON válido (sin markdown):
 {"albums":[{"position":1,"artist":"Nombre","title":"Título","year":2020,"confidence":0.9,"spine_x_start":0.0,"spine_x_end":0.03}]}`;
     }
     
-    console.log(`Modo: ${isReanalyze ? 'RE-ANÁLISIS' : 'COMPLETO'} | Prompt: ${prompt.length} chars`);
+    console.log(`Modo: ${isSingleAlbum ? 'SINGLE_ALBUM' : isReanalyze ? 'RE-ANÁLISIS' : 'COMPLETO'} | Prompt: ${prompt.length} chars`);
 
     // Llamar a Gemini con fallback entre modelos
     // Preparar request body por modelo (cada serie necesita config distinta para thinking)
@@ -235,7 +249,18 @@ Responde SOLO JSON válido (sin markdown):
     
     try {
       const parsed = JSON.parse(jsonText.trim());
-      albums = Array.isArray(parsed) ? parsed : (parsed.albums || []);
+      if (isSingleAlbum) {
+        // Modo single_album: la respuesta es un objeto {artist, title, year, confidence}
+        if (parsed.artist && parsed.title) {
+          albums = [{ position: 1, ...parsed }];
+        } else if (parsed.albums) {
+          albums = parsed.albums;
+        } else if (Array.isArray(parsed)) {
+          albums = parsed;
+        }
+      } else {
+        albums = Array.isArray(parsed) ? parsed : (parsed.albums || []);
+      }
     } catch (e) {
       console.warn("JSON parse falló, recuperando...");
       parseError = `${e}`;

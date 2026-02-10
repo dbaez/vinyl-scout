@@ -1,10 +1,12 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/shelf_model.dart';
 import '../services/shelf_service.dart';
+import '../services/social_service.dart';
 import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
 import '../l10n/app_localizations.dart';
@@ -119,94 +121,61 @@ class _ShelvesScreenState extends State<ShelvesScreen> with SingleTickerProvider
   Future<ImageSource?> _showImageSourceDialog() async {
     return showModalBottomSheet<ImageSource>(
       context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        decoration: BoxDecoration(
-          color: Colors.grey[900],
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[700],
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              'Añadir estantería',
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Toma una foto de tu mueble de vinilos',
-              style: TextStyle(color: Colors.grey[400]),
-            ),
-            const SizedBox(height: 24),
-            Row(
-              children: [
-                Expanded(
-                  child: _buildSourceOption(
-                    icon: Icons.photo_library_rounded,
-                    label: 'Galería',
-                    color: AppTheme.primaryColor,
-                    onTap: () => Navigator.pop(context, ImageSource.gallery),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: _buildSourceOption(
-                    icon: Icons.camera_alt_rounded,
-                    label: 'Cámara',
-                    color: AppTheme.secondaryColor,
-                    onTap: () => Navigator.pop(context, ImageSource.camera),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-          ],
-        ),
+      backgroundColor: AppTheme.backgroundColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-    );
-  }
-
-  Widget _buildSourceOption({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 24),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.15),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withOpacity(0.3)),
-        ),
-        child: Column(
-          children: [
-            Icon(icon, color: color, size: 32),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              style: TextStyle(
-                color: color,
-                fontWeight: FontWeight.w600,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('AÑADIR ESTANTERÍA',
+                  style: GoogleFonts.archivoBlack(
+                      fontSize: 16, color: AppTheme.primaryColor)),
+              const SizedBox(height: 4),
+              Text('Toma una foto de tu mueble de vinilos',
+                  style: GoogleFonts.robotoCondensed(
+                      fontSize: 13, color: Colors.grey[600])),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accentColor,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.primaryColor, width: 2),
+                  ),
+                  child: const Icon(Icons.camera_alt, color: Colors.white, size: 22),
+                ),
+                title: Text('CÁMARA',
+                    style: GoogleFonts.archivoBlack(
+                        fontSize: 13, color: AppTheme.primaryColor)),
+                subtitle: Text('Haz una foto ahora',
+                    style: GoogleFonts.robotoCondensed(color: Colors.grey[600])),
+                onTap: () => Navigator.pop(ctx, ImageSource.camera),
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppTheme.secondaryColor,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.primaryColor, width: 2),
+                  ),
+                  child: const Icon(Icons.photo_library, color: Colors.white, size: 22),
+                ),
+                title: Text('GALERÍA',
+                    style: GoogleFonts.archivoBlack(
+                        fontSize: 13, color: AppTheme.primaryColor)),
+                subtitle: Text('Elige de tu galería',
+                    style: GoogleFonts.robotoCondensed(color: Colors.grey[600])),
+                onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -577,6 +546,7 @@ class _ShelvesScreenState extends State<ShelvesScreen> with SingleTickerProvider
           ),
         ).then((_) => _loadShelves());
       },
+      onLongPress: () => _showEditShelfDialog(shelf),
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(10),
@@ -670,6 +640,30 @@ class _ShelvesScreenState extends State<ShelvesScreen> with SingleTickerProvider
                   ),
                 ),
               ),
+              // Badge pública
+              if (shelf.isPublic)
+                Positioned(
+                  top: 12,
+                  left: 12,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppTheme.accentColor,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: Colors.white, width: 1.5),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.public, color: Colors.white, size: 12),
+                        const SizedBox(width: 4),
+                        Text('PÚBLICA',
+                            style: GoogleFonts.archivoBlack(
+                                color: Colors.white, fontSize: 9)),
+                      ],
+                    ),
+                  ),
+                ),
               // Icono de flecha
               Positioned(
                 top: 12,
@@ -692,6 +686,121 @@ class _ShelvesScreenState extends State<ShelvesScreen> with SingleTickerProvider
         ),
       ),
     );
+  }
+
+  Future<void> _showEditShelfDialog(ShelfModel shelf) async {
+    HapticFeedback.mediumImpact();
+    final nameController = TextEditingController(text: shelf.name);
+    bool isPublic = shelf.isPublic;
+    final socialService = SocialService();
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          backgroundColor: Colors.white,
+          title: Text('EDITAR ESTANTERÍA',
+              style: GoogleFonts.archivoBlack(
+                  fontSize: 16, color: AppTheme.primaryColor)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Nombre
+              Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: AppTheme.primaryColor, width: 2),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: TextField(
+                  controller: nameController,
+                  style: GoogleFonts.robotoCondensed(
+                      fontSize: 15, color: AppTheme.primaryColor),
+                  decoration: InputDecoration(
+                    labelText: 'Nombre',
+                    labelStyle: GoogleFonts.archivoBlack(
+                        fontSize: 12, color: Colors.grey[500]),
+                    border: InputBorder.none,
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Toggle público
+              Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: AppTheme.primaryColor, width: 2),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: SwitchListTile(
+                  title: Text('Pública',
+                      style: GoogleFonts.archivoBlack(
+                          fontSize: 13, color: AppTheme.primaryColor)),
+                  subtitle: Text(
+                      isPublic
+                          ? 'Visible en tu perfil público'
+                          : 'Solo tú puedes verla',
+                      style: GoogleFonts.robotoCondensed(
+                          fontSize: 12, color: Colors.grey[600])),
+                  value: isPublic,
+                  activeColor: AppTheme.secondaryColor,
+                  onChanged: (val) => setDialogState(() => isPublic = val),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('CANCELAR',
+                  style: GoogleFonts.archivoBlack(
+                      fontSize: 12, color: Colors.grey[500])),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, {
+                'name': nameController.text.trim(),
+                'is_public': isPublic,
+              }),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.secondaryColor,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              child: Text('GUARDAR',
+                  style: GoogleFonts.archivoBlack(
+                      fontSize: 12, color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result != null && mounted) {
+      final newName = result['name'] as String;
+      final newIsPublic = result['is_public'] as bool;
+
+      try {
+        final updates = <String, dynamic>{};
+        if (newName.isNotEmpty && newName != shelf.name) {
+          updates['name'] = newName;
+        }
+        if (newIsPublic != shelf.isPublic) {
+          updates['is_public'] = newIsPublic;
+        }
+        if (updates.isNotEmpty) {
+          await Supabase.instance.client
+              .from('shelves')
+              .update(updates)
+              .eq('id', shelf.id);
+          _loadShelves();
+        }
+      } catch (e) {
+        debugPrint('Error updating shelf: $e');
+      }
+    }
+
+    nameController.dispose();
   }
 
   Widget _buildFAB() {

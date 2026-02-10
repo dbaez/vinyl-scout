@@ -109,6 +109,26 @@ class AlbumService {
     }
   }
 
+  /// Obtiene la posición máxima de los álbumes en una zona
+  Future<int> getMaxPositionInZone(String zoneId) async {
+    try {
+      final result = await _supabase
+          .from('albums')
+          .select('position_index')
+          .eq('zone_id', zoneId)
+          .order('position_index', ascending: false)
+          .limit(1);
+
+      if ((result as List).isNotEmpty && result[0]['position_index'] != null) {
+        return result[0]['position_index'] as int;
+      }
+      return 0;
+    } catch (e) {
+      debugPrint('Error obteniendo max position: $e');
+      return 0;
+    }
+  }
+
   /// Migración lazy: persiste carátulas de Discogs a Supabase Storage.
   /// Se ejecuta en background (fire-and-forget) al cargar albums.
   /// Solo migra las que aún apuntan a Discogs, una sola vez por sesión.
@@ -296,17 +316,28 @@ class AlbumService {
     }
   }
 
-  /// Mueve un álbum a otra zona
-  Future<bool> moveAlbumToZone(String albumId, String? newZoneId) async {
+  /// Desplaza los álbumes de una zona a partir de una posición (incrementa position_index en 1)
+  /// para hacer hueco a un nuevo álbum en esa posición
+  Future<void> shiftAlbumsFromPosition(String zoneId, int fromPosition) async {
     try {
-      await _supabase
+      // Obtener álbumes con position_index >= fromPosition
+      final albums = await _supabase
           .from('albums')
-          .update({'zone_id': newZoneId})
-          .eq('id', albumId);
-      return true;
+          .select('id, position_index')
+          .eq('zone_id', zoneId)
+          .gte('position_index', fromPosition)
+          .order('position_index', ascending: false); // De mayor a menor para evitar conflictos
+
+      for (final album in (albums as List)) {
+        final currentPos = album['position_index'] as int;
+        await _supabase
+            .from('albums')
+            .update({'position_index': currentPos + 1})
+            .eq('id', album['id']);
+      }
+      debugPrint('Zona $zoneId: desplazados álbumes desde posición $fromPosition');
     } catch (e) {
-      debugPrint('Error moviendo álbum: $e');
-      return false;
+      debugPrint('Error desplazando álbumes: $e');
     }
   }
 
@@ -395,6 +426,7 @@ class AlbumService {
                 .update({
                   'genres': result.genres,
                   'styles': result.styles,
+                  'discogs_id': result.id,
                 })
                 .eq('id', album['id']);
             updated++;
