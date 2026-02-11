@@ -36,6 +36,15 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Set redirect URL
+        id: redirect
+        run: |
+          if [ -n "${{ secrets.PAGES_REDIRECT_URL }}" ]; then
+            echo "url=${{ secrets.PAGES_REDIRECT_URL }}" >> $GITHUB_OUTPUT
+          else
+            echo "url=https://${{ github.repository_owner }}.github.io/vinyl-scout/" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build Flutter Web
         run: |
           flutter build web --release \
@@ -44,7 +53,7 @@ jobs:
             --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} \
             --dart-define=DISCOGS_TOKEN=${{ secrets.DISCOGS_TOKEN }} \
             --dart-define=GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
-            --dart-define=APP_REDIRECT_URL=https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+            --dart-define=APP_REDIRECT_URL=${{ steps.redirect.outputs.url }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
