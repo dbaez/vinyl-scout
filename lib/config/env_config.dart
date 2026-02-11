@@ -65,6 +65,13 @@ class EnvConfig {
       supabaseUrl.isNotEmpty &&
       supabaseAnonKey.isNotEmpty;
 
+  /// URL de redirección OAuth para producción (GitHub Pages).
+  /// Se inyecta en build con --dart-define=APP_REDIRECT_URL=...
+  static const String appRedirectUrl = String.fromEnvironment(
+    'APP_REDIRECT_URL',
+    defaultValue: '',
+  );
+
   /// Lista de variables faltantes
   static List<String> getMissingVariables() {
     final missing = <String>[];

@@ -43,7 +43,8 @@ jobs:
             --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
             --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} \
             --dart-define=DISCOGS_TOKEN=${{ secrets.DISCOGS_TOKEN }} \
-            --dart-define=GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            --dart-define=GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
+            --dart-define=APP_REDIRECT_URL=https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
