@@ -278,12 +278,14 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
     try {
       setState(() => _isLoading = true);
       
-      // Redirect URL: en producción usa APP_REDIRECT_URL inyectada en build;
-      // en desarrollo usa la URL actual del navegador
+      // Redirect URL para OAuth
       String redirectUrl;
       if (kIsWeb) {
-        if (EnvConfig.appRedirectUrl.isNotEmpty) {
-          redirectUrl = EnvConfig.appRedirectUrl;
+        // En producción (github.io) SIEMPRE usar la URL del mismo origen.
+        // En localhost usar la URL actual.
+        final host = Uri.base.host;
+        if (host.contains('github.io')) {
+          redirectUrl = 'https://$host/vinyl-scout/';
         } else {
           final origin = Uri.base.origin;
           final path = Uri.base.path;
