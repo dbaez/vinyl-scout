@@ -35,30 +35,29 @@ class EnvConfig {
     defaultValue: '',
   );
 
-  // Amazon Affiliates
+  // Amazon Affiliates (opcional — si vacío, enlaces sin tracking)
   static const String amazonTagEs = String.fromEnvironment(
     'AMAZON_TAG_ES',
-    defaultValue: 'vinylscout-21', // placeholder — reemplazar con tu tag real
+    defaultValue: '',
   );
   static const String amazonTagCom = String.fromEnvironment(
     'AMAZON_TAG_COM',
-    defaultValue: 'vinylscout-20', // placeholder — reemplazar con tu tag real
+    defaultValue: '',
   );
 
-  /// Genera un enlace de búsqueda de Amazon con tag de afiliado.
-  /// Detecta la región por el locale del dispositivo.
+  /// Genera un enlace de búsqueda de Amazon (con tag de afiliado si está configurado).
   static String amazonSearchUrl({
     required String artist,
     required String album,
     required String locale,
   }) {
-    // Limpiar y construir query: solo letras, números y espacios
     final raw = '$artist $album'.replaceAll(RegExp(r'[^\w\s]', unicode: true), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
     final encoded = Uri.encodeComponent(raw);
-    if (locale.startsWith('es')) {
-      return 'https://www.amazon.es/s?k=$encoded&tag=$amazonTagEs';
-    }
-    return 'https://www.amazon.com/s?k=$encoded&tag=$amazonTagCom';
+    final base = locale.startsWith('es')
+        ? 'https://www.amazon.es/s?k=$encoded'
+        : 'https://www.amazon.com/s?k=$encoded';
+    final tag = locale.startsWith('es') ? amazonTagEs : amazonTagCom;
+    return tag.isNotEmpty ? '$base&tag=$tag' : base;
   }
 
   /// Verifica si todas las variables requeridas están configuradas
