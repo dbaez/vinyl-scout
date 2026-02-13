@@ -45,6 +45,7 @@ CREATE POLICY "Anyone can view follows"
 
 -- Solo puedes crear follows donde tú eres el follower
 CREATE POLICY "Users can follow others"
+
   ON public.follows FOR INSERT
   WITH CHECK (auth.uid() = follower_id);
 

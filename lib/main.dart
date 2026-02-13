@@ -18,7 +18,12 @@ void main() async {
     EnvConfig.printStatus();
   }
 
-  // Inicialización de Supabase
+  // Validación crítica: sin SUPABASE_URL el OAuth redirige a localhost
+  if (EnvConfig.supabaseUrl.isEmpty || EnvConfig.supabaseAnonKey.isEmpty) {
+    runApp(const _ConfigErrorApp());
+    return;
+  }
+
   await Supabase.initialize(
     url: EnvConfig.supabaseUrl,
     anonKey: EnvConfig.supabaseAnonKey,
@@ -28,6 +33,50 @@ void main() async {
   );
 
   runApp(const MyApp());
+}
+
+/// Pantalla de error cuando faltan credenciales (evita redirect a localhost)
+class _ConfigErrorApp extends StatelessWidget {
+  const _ConfigErrorApp();
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'VinylScout',
+      theme: AppTheme.lightTheme,
+      home: Scaffold(
+        backgroundColor: AppTheme.backgroundColor,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.error_outline, size: 64, color: Colors.orange.shade700),
+                const SizedBox(height: 24),
+                Text(
+                  'Configuración incompleta',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  kIsWeb && Uri.base.host == 'localhost'
+                      ? 'Ejecuta con ./run_dev.sh chrome para cargar SUPABASE_URL y SUPABASE_ANON_KEY desde .env'
+                      : 'Faltan SUPABASE_URL o SUPABASE_ANON_KEY. En GitHub Actions, configura los secrets del repositorio.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class MyApp extends StatelessWidget {
@@ -281,12 +330,11 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
       // Redirect URL para OAuth
       String redirectUrl;
       if (kIsWeb) {
-        // En producción (github.io) SIEMPRE usar la URL del mismo origen.
-        // En localhost usar la URL actual.
-        final host = Uri.base.host;
-        if (host.contains('github.io')) {
-          redirectUrl = 'https://$host/vinyl-scout/';
+        // En producción: usar APP_REDIRECT_URL inyectada en build (SIEMPRE prioritaria)
+        if (EnvConfig.appRedirectUrl.isNotEmpty) {
+          redirectUrl = EnvConfig.appRedirectUrl;
         } else {
+          // Desarrollo local: usar Uri.base
           final origin = Uri.base.origin;
           final path = Uri.base.path;
           redirectUrl = path.isEmpty ? '$origin/' : '$origin${path.endsWith('/') ? path : '$path/'}';

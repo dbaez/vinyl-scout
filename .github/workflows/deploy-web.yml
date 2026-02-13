@@ -36,11 +36,20 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Verify secrets
+        run: |
+          if [ -z "${{ secrets.SUPABASE_URL }}" ] || [ -z "${{ secrets.SUPABASE_ANON_KEY }}" ]; then
+            echo "::error::Faltan SUPABASE_URL o SUPABASE_ANON_KEY. Configúralos en Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+
       - name: Set redirect URL
         id: redirect
         run: |
-          if [ -n "${{ secrets.PAGES_REDIRECT_URL }}" ]; then
-            echo "url=${{ secrets.PAGES_REDIRECT_URL }}" >> $GITHUB_OUTPUT
+          REDIRECT="${{ secrets.PAGES_REDIRECT_URL }}"
+          # NUNCA usar localhost en producción (56841 es puerto aleatorio de Flutter dev)
+          if [ -n "$REDIRECT" ] && ! echo "$REDIRECT" | grep -qE 'localhost|127\.0\.0\.1'; then
+            echo "url=$REDIRECT" >> $GITHUB_OUTPUT
           else
             echo "url=https://${{ github.repository_owner }}.github.io/vinyl-scout/" >> $GITHUB_OUTPUT
           fi
