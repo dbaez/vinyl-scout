@@ -1,6 +1,6 @@
 # vinyl_scout
 
-A new Flutter project.
+Let's spin
 
 ## Getting Started
 
