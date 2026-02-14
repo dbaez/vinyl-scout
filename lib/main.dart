@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'config/env_config.dart';
 import 'services/user_service.dart';
 import 'theme/app_theme.dart';
@@ -344,11 +345,31 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
       }
       
       debugPrint('OAuth redirect URL: $redirectUrl');
-      
-      await Supabase.instance.client.auth.signInWithOAuth(
-        OAuthProvider.google,
-        redirectTo: redirectUrl,
-      );
+
+      // En web: abrir OAuth en nueva pestaña para evitar Error 403 disallowed_useragent
+      // (Google bloquea OAuth en WebViews/PWA; nueva pestaña usa el navegador completo)
+      if (kIsWeb) {
+        final res = await Supabase.instance.client.auth.getOAuthSignInUrl(
+          provider: OAuthProvider.google,
+          redirectTo: redirectUrl,
+        );
+        final launched = await launchUrl(
+          Uri.parse(res.url),
+          webOnlyWindowName: '_blank',
+        );
+        if (!launched) {
+          // Fallback: flujo estándar si launchUrl falla
+          await Supabase.instance.client.auth.signInWithOAuth(
+            OAuthProvider.google,
+            redirectTo: redirectUrl,
+          );
+        }
+      } else {
+        await Supabase.instance.client.auth.signInWithOAuth(
+          OAuthProvider.google,
+          redirectTo: redirectUrl,
+        );
+      }
     } catch (e) {
       debugPrint("Error en OAuth: $e");
       if (mounted) {

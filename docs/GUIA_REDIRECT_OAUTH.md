@@ -172,6 +172,16 @@ Tu app en producción usa esa URL en `signInWithOAuth(redirectTo: ...)`. Si Supa
 
 ---
 
+## Error 403: disallowed_useragent (PWA / WebView)
+
+Si los usuarios ven "Acceso bloqueado: la solicitud no cumple las políticas de Google sobre navegadores seguros":
+
+**Causa:** Google bloquea OAuth cuando la app corre en WebView o PWA (ej. "Añadir a inicio" en móvil).
+
+**Solución aplicada:** La app abre el login de Google en una **nueva pestaña** (`_blank`), donde el navegador tiene un user agent válido. Tras autenticarse, el usuario vuelve a la app en esa pestaña ya logueado.
+
+---
+
 ## Si sigue fallando
 
 1. **Limpia caché del navegador** o prueba en ventana de incógnito
