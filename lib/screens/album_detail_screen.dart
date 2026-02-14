@@ -757,7 +757,7 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen>
             runSpacing: 10,
             children: [
               if (_album.year != null)
-                _buildTag('${_album.year}', Icons.calendar_today, AppTheme.primaryColor),
+                _buildTag('${_album.year}', Icons.calendar_today, Colors.white),
               ..._album.genres.take(3).map((g) => 
                 _buildTag(g, Icons.music_note, Colors.purple, filterable: true)),
               ..._album.styles.take(3).map((s) => 
